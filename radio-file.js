@@ -1,0 +1,22 @@
+/* FT5D file inspection. Independently implemented from documented file regions.
+   No .NET objects are instantiated and no radio configuration is encoded. */
+(function(root){
+'use strict';
+const TONES=[67,69.3,71.9,74.4,77,79.7,82.5,85.4,88.5,91.5,94.8,97.4,100,103.5,107.2,110.9,114.8,118.8,123,127.3,131.8,136.5,141.3,146.2,151.4,156.7,159.8,162.2,165.5,167.9,171.3,173.8,177.3,179.9,183.5,186.2,189.9,192.8,196.6,199.5,203.5,206.5,210.7,218.1,225.7,229.1,233.6,241.8,250.3,254.1];
+const STEPS=[5,6.25,8.33,10,12.5,15,20,25,50,100,9];
+const DCS='023 025 026 031 032 036 043 047 051 053 054 065 071 072 073 074 114 115 116 122 125 131 132 134 143 145 152 155 156 162 165 172 174 205 212 223 225 226 243 244 245 246 251 252 255 261 263 265 266 271 274 306 311 315 325 331 332 343 346 351 356 364 365 371 411 412 413 423 431 432 445 446 452 454 455 462 464 465 466 503 506 516 523 526 532 546 565 606 612 624 627 631 632 654 662 664 703 712 723 731 732 734 743 754'.split(' ');
+const SQL=['Off','Tone','Tone squelch','DCS','Reverse tone','JR','PR','Pager','Reserved','D CD','Tone-DCS','D CD-Tone'];
+function text(a){return String.fromCharCode(...a)}
+function bcd(a,offset){let n=0;for(let i=0;i<3;i++){const b=a[offset+i];if((b>>4)>9||(b&15)>9)throw Error('Invalid BCD frequency in an occupied memory record.');n=n*100+(b>>4)*10+(b&15)}return n/1000}
+function name(a){let out='';for(const b of a){if(b===255||b===0)break;out+=(b>=32&&b<127)?String.fromCharCode(b):'�'}return out}
+function parse(input){const source=new Uint8Array(input);if(source.length>2e6)throw Error('File is too large.');let image,format,base,headerLength=0;
+ if(source.length===44160){format='MEMORY.dat';image=source;base={dir:0x12c0,rec:0x1800,bank:0};}
+ else if(source.length===130496&&text(source.slice(0,5))==='AH82M'){format='BACKUP.dat';image=source;base={dir:0x2800,rec:0x2d40,bank:0x1540};}
+ else{const signature=text(source.slice(0,200));if(!signature.includes('ADMS14, Version=1.0.'))throw Error('Not a recognised ADMS-14 FT5D file.');const matches=[];const dv=new DataView(source.buffer,source.byteOffset,source.byteLength);for(let i=0;i<=Math.min(source.length-10,4096);i++){if(source[i]!==15||source[i+9]!==2)continue;const id=dv.getUint32(i+1,true),n=dv.getUint32(i+5,true);if(id>0&&id<100&&[130496,130752].includes(n)&&i+10+n<=source.length&&text(source.slice(i+10,i+15))==='AH82M')matches.push({start:i+10,length:n});}if(matches.length!==1)throw Error('Unsupported or ambiguous ADMS-14 byte-array layout.');headerLength=matches[0].start;image=source.slice(headerLength,headerLength+matches[0].length);format='ADMS-14 .ft5d';base={dir:0x2800,rec:0x2d40,bank:0x1540};}
+ const channels=[];const slots=new Map();for(let i=0;i<900;i++){const flag=image[base.dir+i];if(!(flag&1))continue;const off=base.rec+i*32,r=image.slice(off,off+32);if(r.length!==32)throw Error('Truncated memory table.');const rx=bcd(r,2),direction=(r[1]>>4)&3,shift=direction?bcd(r,24):0,digital=(r[5]>>4)&3,analog=(r[1]>>6)&3;const tx=direction===1?rx-shift:direction===2?rx+shift:direction===3?shift:rx;const ch={id:i+1,name:name(r.slice(8,24)),frequency:rx,tx,mode:digital?['','AMS','DN','VW'][digital]:['FM','AM','WFM','Reserved'][analog],step:STEPS[r[1]&15]??null,shift:['Simplex','−','+','Split'][direction],squelch:SQL[r[5]&15]??'Reserved',tone:TONES[r[27]]??null,dcs:DCS[r[28]]??null,power:['0.3 W','1 W','2.5 W','5 W'][r[5]>>6],narrow:!!(r[0]&32),skip:(flag>>2)&3,banks:[]};channels.push(ch);slots.set(i,ch);}
+ for(let bank=0;bank<24;bank++)for(let slot=0;slot<100;slot++){const o=base.bank+bank*200+slot*2,v=(image[o]<<8)|image[o+1];if(v!==65535&&(v>>11)===0){const ch=slots.get(v&2047);if(ch&&!ch.banks.includes(bank+1))ch.banks.push(bank+1)}}
+ const ckOffset=format==='MEMORY.dat'?0xab19:image.length-4,ckLen=format==='MEMORY.dat'?3:4;let sum=0,stored=0;for(let i=0;i<ckOffset;i++)sum=(sum+image[i])>>>0;for(let i=0;i<ckLen;i++)stored=stored*256+image[ckOffset+i];if(ckLen===3)sum&=0xffffff;
+ return {format,model:format==='MEMORY.dat'?'FT5D memory file (no model header)':text(image.slice(0,5)),sourceLength:source.length,imageLength:image.length,headerLength,channels,checksum:{stored,calculated:sum,matches:stored===sum,rule:'Additive checksum candidate only; not a verified ADMS-14 transfer checksum.'},source};
+}
+root.FT5DFile={parse};if(typeof module!=='undefined')module.exports=root.FT5DFile;
+})(typeof globalThis!=='undefined'?globalThis:this);
